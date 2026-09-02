@@ -1,0 +1,73 @@
+{
+  "name": "@heyhuynhgiabuu/pi-oauth-antigravity",
+  "version": "0.1.0",
+  "description": "Google Antigravity OAuth provider extension for Pi with Gemini 3.8, prompt cache session affinity, and trajectory chaining.",
+  "type": "module",
+  "main": "dist/index.js",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist",
+    "README.md",
+    "LICENSE",
+    "CHANGELOG.md"
+  ],
+  "scripts": {
+    "build": "tsc",
+    "clean": "node -e \"require('node:fs').rmSync('dist', { recursive: true, force: true })\"",
+    "typecheck": "tsc --noEmit",
+    "test": "tsx --test test/**/*.test.ts",
+    "prepack": "npm run build"
+  },
+  "keywords": [
+    "pi",
+    "pi-extension",
+    "pi-package",
+    "antigravity",
+    "gemini",
+    "google-cloud-code-assist",
+    "oauth",
+    "prompt-caching"
+  ],
+  "license": "MIT",
+  "author": "huynhgiabuu",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/heyhuynhgiabuu/pi-oauth-antigravity.git"
+  },
+  "bugs": {
+    "url": "https://github.com/heyhuynhgiabuu/pi-oauth-antigravity/issues"
+  },
+  "homepage": "https://github.com/heyhuynhgiabuu/pi-oauth-antigravity#readme",
+  "publishConfig": {
+    "access": "public"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-ai": "*",
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "peerDependenciesMeta": {
+    "@earendil-works/pi-coding-agent": {
+      "optional": true
+    }
+  },
+  "dependencies": {
+    "undici": "^8.10.0"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "^0.84.4",
+    "@earendil-works/pi-coding-agent": "^0.84.4",
+    "@types/node": "^22.20.1",
+    "tsx": "^4.20.6",
+    "typescript": "^5.9.3"
+  },
+  "pi": {
+    "extensions": [
+      "./dist/index.js"
+    ]
+  }
+}
