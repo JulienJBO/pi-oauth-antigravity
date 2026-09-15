@@ -86,6 +86,56 @@ const ANTIGRAVITY_NO_PREAMBLE_INSTRUCTION =
 
 let toolCallCounter = 0;
 
+/**
+ * Transient 429s (shared-capacity smoothing, per-minute rate limits, generic
+ * RESOURCE_EXHAUSTED) are retried on the same endpoint with backoff. Only
+ * "Individual quota reached" is plan quota, which cannot clear before its reset time
+ * and therefore fails fast instead of burning the host's retry budget.
+ */
+const THROTTLE_MAX_RETRIES = 2;
+const DEFAULT_THROTTLE_BASE_DELAY_MS = 2000;
+
+/** Override the 429 backoff via ANTIGRAVITY_THROTTLE_BASE_DELAY_MS (ops/tests). */
+function throttleBaseDelayMs(): number {
+  const raw = Number(antigravityEnv("THROTTLE_BASE_DELAY_MS"));
+  return Number.isFinite(raw) && raw >= 0 ? raw : DEFAULT_THROTTLE_BASE_DELAY_MS;
+}
+
+/** Abort-aware sleep so a cancelled turn never waits out a backoff. */
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new Error("Request was aborted"));
+      return;
+    }
+    const timer = setTimeout(() => {
+      signal?.removeEventListener("abort", onAbort);
+      resolve();
+    }, ms);
+    function onAbort() {
+      clearTimeout(timer);
+      reject(new Error("Request was aborted"));
+    }
+    signal?.addEventListener("abort", onAbort, { once: true });
+  });
+}
+
+/** Plan quota is deterministic; everything else on a 429 is a transient throttle. */
+export function isPlanQuotaError(status: number | undefined, text: string): boolean {
+  return status === 429 && /Individual quota reached/i.test(text);
+}
+
+/**
+ * pi chooses auto-retry by matching the error text (`isRetryableAssistantError`) and
+ * checks account-limit phrases like "quota exceeded" BEFORE retryable ones. Google's
+ * transient per-minute 429 body starts with exactly that phrase, so quoting it verbatim
+ * would make the host skip retrying a throttle. Keep the quote readable but unmatchable.
+ */
+const HOST_ACCOUNT_LIMIT_PHRASES = /\bquota[\s-]+exceeded\b/gi;
+function quoteBackendMessage(text: string): string {
+  return text.replace(HOST_ACCOUNT_LIMIT_PHRASES, "quota-limit hit");
+}
+
 function sanitizeToolCallId(id: string, fallbackName?: string): string {
   const cleaned = id.replace(/[^a-zA-Z0-9_-]/g, "_");
   const capped = cleaned.slice(0, 64);
@@ -544,7 +594,8 @@ export function mapStopReason(reason: string | undefined): StopReason {
 
 /** Exported for unit tests. */
 export function friendlyAntigravityError(status: number | undefined, text: string): string {
-  const msg = redactSecrets(jsonOrTextError(text)).slice(0, 500);
+  const full = redactSecrets(jsonOrTextError(text));
+  const msg = full.slice(0, 500);
   if (status === 400) {
     if (/API key not valid|API_KEY_INVALID/i.test(msg)) {
       return "Antigravity login expired or credentials are invalid. Next: run /login antigravity, then retry.";
@@ -578,13 +629,17 @@ export function friendlyAntigravityError(status: number | undefined, text: strin
   }
   if (status === 429) {
     const wait = msg.match(/Resets? in ([^.\n]+)/i)?.[1]?.trim();
-    if (/Individual quota reached/i.test(msg)) {
+    if (isPlanQuotaError(status, full)) {
       return `Quota reached. Please wait ${wait || "for reset"}. Next: switch models or try again after reset.`;
     }
+    // Only "Individual quota reached" is plan quota. Shared-capacity smoothing,
+    // per-minute rate limits, and generic RESOURCE_EXHAUSTED all contain "quota" too,
+    // so never tell the user their quota is gone on those.
+    const backendNote = msg ? ` Backend said: ${quoteBackendMessage(msg)}` : "";
     if (/quota/i.test(msg)) {
-      return `Quota reached.${wait ? ` Please wait ${wait}.` : ""} Next: switch models or retry later.`;
+      return `Antigravity throttled this request (transient, not plan quota)${wait ? `; resets in ${wait}` : ""}.${backendNote}`;
     }
-    return `Rate limited by Antigravity. Next: wait a bit and retry.${wait ? ` Reset: ${wait}.` : ""}`;
+    return `Rate limited by Antigravity. Next: wait a bit and retry.${wait ? ` Reset: ${wait}.` : ""}${backendNote}`;
   }
   if (status === 500) {
     return "Antigravity had an internal server error. Next: retry in a moment or switch models.";
@@ -872,7 +927,7 @@ export function streamAntigravity(
         if (opts.signal?.aborted) throw new Error("Request was aborted");
         if (emptyAttempt > 0) {
           const delay = 500 * 2 ** (emptyAttempt - 1);
-          await new Promise((res) => setTimeout(res, delay));
+          await sleep(delay, opts.signal);
         }
 
         for (let candIdx = 0; candIdx < runtimeCandidates.length; candIdx++) {
@@ -882,24 +937,39 @@ export function streamAntigravity(
 
           for (const endpoint of endpointCandidates(sessionState.lastGoodEndpoint)) {
             setLastEndpoint(endpoint);
-            response = await antigravityFetch(
-              `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
-              {
-                method: "POST",
-                headers: requestHeaders,
-                body,
-                signal: opts.signal,
-              },
-            );
-            setLastStatus(response.status);
-            if (response.ok) {
-              sessionState.lastGoodEndpoint = endpoint;
-              persistAntigravitySessions();
+            let throttleAttempt = 0;
+            for (;;) {
+              response = await antigravityFetch(
+                `${endpoint}/v1internal:streamGenerateContent?alt=sse`,
+                {
+                  method: "POST",
+                  headers: requestHeaders,
+                  body,
+                  signal: opts.signal,
+                },
+              );
+              setLastStatus(response.status);
+              if (response.ok) {
+                sessionState.lastGoodEndpoint = endpoint;
+                persistAntigravitySessions();
+                break;
+              }
+              lastText = await response.text();
+              // Plan quota cannot clear before its reset time: fail fast.
+              if (isPlanQuotaError(response.status, lastText)) break;
+              // Every other 429 is a transient throttle. Back off on the same endpoint
+              // instead of hopping regions, which multiplies load on a throttled account.
+              if (response.status === 429 && throttleAttempt < THROTTLE_MAX_RETRIES) {
+                await sleep(throttleBaseDelayMs() * 2 ** throttleAttempt, opts.signal);
+                throttleAttempt += 1;
+                continue;
+              }
               break;
             }
-            lastText = await response.text();
-            if (response.status === 429 && /Individual quota reached/i.test(lastText)) break;
-            if (![403, 404, 429, 500, 502, 503, 504].includes(response.status)) break;
+            if (response.ok) break;
+            // 429s were already retried above; every endpoint shares the same throttle.
+            if (response.status === 429) break;
+            if (![403, 404, 500, 502, 503, 504].includes(response.status)) break;
           }
 
           if (response?.ok) break;
@@ -958,7 +1028,10 @@ export function streamAntigravity(
             }
           }
           const friendly = friendlyAntigravityError(response?.status, lastText);
-          if (response?.status === 429 && /Quota reached\./i.test(friendly)) {
+          // Plan quota only clears at reset: keep the bare message so the host does not
+          // retry it. Transient throttles keep the status + backend text so they stay
+          // diagnosable and retryable.
+          if (isPlanQuotaError(response?.status, lastText)) {
             throw new Error(friendly);
           }
           throw new Error(

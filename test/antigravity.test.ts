@@ -1,5 +1,7 @@
 import test from "node:test";
 import assert from "node:assert/strict";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import {
 	ANTIGRAVITY_MODELS,
 	PROVIDER_ID,
@@ -14,7 +16,9 @@ import {
 	convertMessages,
 	convertTools,
 	friendlyAntigravityError,
+	isPlanQuotaError,
 	mapStopReason,
+	streamAntigravity,
 	streamResponse,
 } from "../src/stream/stream.js";
 import {
@@ -52,7 +56,7 @@ import {
 	parseImageCommandArgs,
 	resolveImageSavePath,
 } from "../src/image/image.js";
-import { createAssistantMessageEventStream } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, isRetryableAssistantError } from "@earendil-works/pi-ai";
 import type { Model, Api } from "@earendil-works/pi-ai";
 
 function fakeModel(id: string): Model<Api> {
@@ -77,6 +81,76 @@ function withEnv(name: string, value: string | undefined, fn: () => void): void 
 		if (prev === undefined) delete process.env[name];
 		else process.env[name] = prev;
 	}
+}
+
+async function withEnvAsync(
+	env: Record<string, string | undefined>,
+	fn: () => Promise<void>,
+): Promise<void> {
+	const prev = new Map<string, string | undefined>();
+	for (const [name, value] of Object.entries(env)) {
+		prev.set(name, process.env[name]);
+		if (value === undefined) delete process.env[name];
+		else process.env[name] = value;
+	}
+	try {
+		await fn();
+	} finally {
+		for (const [name, value] of prev) {
+			if (value === undefined) delete process.env[name];
+			else process.env[name] = value;
+		}
+	}
+}
+
+/** Stub global fetch and record every request URL. */
+async function withFetchStub(
+	respond: (url: string, call: number) => Response,
+	fn: (calls: string[]) => Promise<void>,
+): Promise<void> {
+	const original = globalThis.fetch;
+	const calls: string[] = [];
+	globalThis.fetch = (async (input: string | URL | Request) => {
+		const url = typeof input === "string" ? input : input instanceof URL ? input.href : input.url;
+		calls.push(url);
+		return respond(url, calls.length);
+	}) as typeof fetch;
+	try {
+		await fn(calls);
+	} finally {
+		globalThis.fetch = original;
+	}
+}
+
+const STREAM_OK_SSE =
+	'data: {"response":{"candidates":[{"content":{"parts":[{"text":"ok"}]},"finishReason":"STOP"}]}}\n\n';
+
+function errorResponse(status: number, message: string): Response {
+	return new Response(JSON.stringify({ error: { code: status, message } }), {
+		status,
+		headers: { "content-type": "application/json" },
+	});
+}
+
+/** One `streamAntigravity` turn against stubbed fetch, resolving the final message. */
+async function streamAntigravityOnce(
+	sessionId = "-4242424242",
+	signal?: AbortSignal,
+): Promise<{ stopReason: string; errorMessage?: string }> {
+	const stream = streamAntigravity(
+		fakeModel("gemini-3.8-flash"),
+		{
+			systemPrompt: "You are pi.",
+			messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
+		} as never,
+		{
+			apiKey: JSON.stringify({ token: "token-1", projectId: "project-1" }),
+			sessionId,
+			reasoning: "high",
+			signal,
+		} as never,
+	);
+	return (await stream.result()) as { stopReason: string; errorMessage?: string };
 }
 
 /* ------------------------------- models.ts ------------------------------- */
@@ -362,6 +436,153 @@ test("friendly errors are actionable and redacted", () => {
 	assert.match(friendlyAntigravityError(429, "Individual quota reached. Resets in 23m."), /23m/);
 	assert.match(friendlyAntigravityError(404, "Requested entity was not found"), /switch to/);
 	assert.match(friendlyAntigravityError(503, "No capacity available"), /capacity/);
+});
+
+test("429 mapping separates plan quota from transient throttles", () => {
+	const plan = friendlyAntigravityError(
+		429,
+		"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h6m27s.",
+	);
+	assert.match(plan, /Quota reached\. Please wait 3h6m27s/);
+	assert.equal(isPlanQuotaError(429, "Individual quota reached. Resets in 3h6m27s."), true);
+	assert.equal(isPlanQuotaError(429, "Resource has been exhausted (e.g. check quota)."), false);
+	assert.equal(isPlanQuotaError(500, "quota"), false);
+	// Plan quota is deterministic: the host must not spend retries on it.
+	assert.equal(
+		isRetryableAssistantError({ stopReason: "error", errorMessage: plan } as never),
+		false,
+	);
+
+	// Shared-capacity smoothing and per-minute limits also contain "quota" but are not
+	// plan quota: keep the backend text instead of claiming the user's quota is gone.
+	const throttle = friendlyAntigravityError(429, "Resource has been exhausted (e.g. check quota).");
+	assert.match(throttle, /transient, not plan quota/);
+	assert.match(throttle, /Resource has been exhausted/);
+
+	// "quota exceeded" is a non-retryable phrase for pi's classifier, so the quoted
+	// backend text must not match it verbatim — the throttle has to stay retryable.
+	const metric = friendlyAntigravityError(
+		429,
+		"Quota exceeded for quota metric 'Generate requests per minute per user'.",
+	);
+	assert.match(metric, /transient, not plan quota/);
+	assert.match(metric, /Generate requests per minute per user/);
+	assert.match(metric, /quota-limit hit/);
+	assert.doesNotMatch(metric, /quota exceeded/i);
+	assert.equal(
+		isRetryableAssistantError({
+			stopReason: "error",
+			errorMessage: `Antigravity API error (429, endpoint=x): ${metric}`,
+		} as never),
+		true,
+	);
+
+	// A 429 with no body must not leave a dangling "Backend said:".
+	assert.doesNotMatch(friendlyAntigravityError(429, ""), /Backend said/);
+});
+
+test("transient 429 retries the same endpoint in place and stays retryable", async () => {
+	const sessionsFile = join(tmpdir(), `ag-throttle-${Date.now()}.json`);
+	await withEnvAsync(
+		{ ANTIGRAVITY_SESSIONS_FILE: sessionsFile, ANTIGRAVITY_THROTTLE_BASE_DELAY_MS: "0" },
+		async () => {
+			await withFetchStub(
+				() =>
+					errorResponse(
+						429,
+						"Quota exceeded for quota metric 'Generate requests per minute per user'.",
+					),
+				async (calls) => {
+					const message = await streamAntigravityOnce("-4242424242");
+					// 1 initial attempt + THROTTLE_MAX_RETRIES in-place retries, all on the primary
+					// endpoint: a shared throttle must not be amplified by region hopping.
+					assert.equal(calls.length, 3);
+					assert.deepEqual([...new Set(calls)], [
+						`${DEFAULT_ENDPOINT}/v1internal:streamGenerateContent?alt=sse`,
+					]);
+					assert.equal(message.stopReason, "error");
+					// Status + backend text survive, so pi's retry classifier can see the 429.
+					assert.match(message.errorMessage ?? "", /Antigravity API error \(429/);
+					assert.match(message.errorMessage ?? "", /Generate requests per minute per user/);
+					assert.equal(
+						isRetryableAssistantError({ stopReason: "error", errorMessage: message.errorMessage } as never),
+						true,
+					);
+				},
+			);
+		},
+	);
+});
+
+test("aborting during a 429 backoff stops retrying", async () => {
+	const sessionsFile = join(tmpdir(), `ag-abort-${Date.now()}.json`);
+	await withEnvAsync(
+		{ ANTIGRAVITY_SESSIONS_FILE: sessionsFile, ANTIGRAVITY_THROTTLE_BASE_DELAY_MS: "500" },
+		async () => {
+			await withFetchStub(
+				() => errorResponse(429, "Resource has been exhausted (e.g. check quota)."),
+				async (calls) => {
+					const controller = new AbortController();
+					const abortTimer = setTimeout(() => controller.abort(), 20);
+					const message = await streamAntigravityOnce("-4545454545", controller.signal);
+					clearTimeout(abortTimer);
+					assert.equal(calls.length, 1);
+					assert.equal(message.stopReason, "aborted");
+				},
+			);
+		},
+	);
+});
+
+test("plan-quota 429 fails fast without retries or endpoint hopping", async () => {
+	const sessionsFile = join(tmpdir(), `ag-plan-quota-${Date.now()}.json`);
+	await withEnvAsync(
+		{ ANTIGRAVITY_SESSIONS_FILE: sessionsFile, ANTIGRAVITY_THROTTLE_BASE_DELAY_MS: "0" },
+		async () => {
+			await withFetchStub(
+				() =>
+					errorResponse(
+						429,
+						"Individual quota reached. Please upgrade your subscription to increase your limits. Resets in 3h6m27s.",
+					),
+				async (calls) => {
+					const message = await streamAntigravityOnce("-4343434343");
+					assert.equal(calls.length, 1);
+					assert.equal(message.stopReason, "error");
+					assert.match(message.errorMessage ?? "", /^Quota reached\. Please wait 3h6m27s/);
+					assert.equal(
+						isRetryableAssistantError({ stopReason: "error", errorMessage: message.errorMessage } as never),
+						false,
+					);
+				},
+			);
+		},
+	);
+});
+
+test("5xx still falls back to the next endpoint", async () => {
+	const sessionsFile = join(tmpdir(), `ag-endpoint-fallback-${Date.now()}.json`);
+	await withEnvAsync({ ANTIGRAVITY_SESSIONS_FILE: sessionsFile }, async () => {
+		await withFetchStub(
+			(_url, call) =>
+				call === 1
+					? errorResponse(500, "internal error")
+					: new Response(STREAM_OK_SSE, {
+							status: 200,
+							headers: { "content-type": "text/event-stream" },
+						}),
+			async (calls) => {
+				const message = await streamAntigravityOnce("-4444444444");
+				assert.equal(calls.length, 2);
+				assert.equal(calls[0], `${DEFAULT_ENDPOINT}/v1internal:streamGenerateContent?alt=sse`);
+				assert.equal(
+					calls[1],
+					`${ENDPOINT_FALLBACKS[1]}/v1internal:streamGenerateContent?alt=sse`,
+				);
+				assert.equal(message.stopReason, "stop");
+			},
+		);
+	});
 });
 
 test("streamResponse parses SSE into blocks, usage, and stop reason", async () => {

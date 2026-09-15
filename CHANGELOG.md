@@ -5,6 +5,14 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.1] - 2026-09-15
+
+### Fixed
+- **Transient throttles are no longer reported as quota exhaustion.** Only `Individual quota reached` (plan quota) maps to "Quota reached"; shared-capacity smoothing, per-minute rate limits, and generic `RESOURCE_EXHAUSTED` now report a transient throttle with the HTTP status and backend message preserved, so the host's retry classifier can retry them instead of failing the turn. Account-limit phrases inside the quoted backend text (e.g. `quota exceeded`) are neutralized so a transient throttle is not misclassified as non-retryable.
+- **Transient 429s retry in place with backoff.** A throttled request is retried up to twice on the same endpoint (2s, then 4s; override via `ANTIGRAVITY_THROTTLE_BASE_DELAY_MS`) instead of hopping to the sandbox/production endpoints, which multiplied load on an already-throttled account.
+- **Plan-quota 429s fail fast** without retrying or hopping endpoints, since the limit cannot clear before its reset time.
+- **Backoff is abort-aware**: cancelling a turn stops the retry immediately.
+
 ## [0.1.0] - 2026-09-02
 
 ### Added
