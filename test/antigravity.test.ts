@@ -56,8 +56,9 @@ import {
 	parseImageCommandArgs,
 	resolveImageSavePath,
 } from "../src/image/image.js";
-import { createAssistantMessageEventStream, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
-import type { Model, Api } from "@earendil-works/pi-ai";
+import { getCurrentSystemPrompt, getCurrentTools } from "../src/stream/transcript.js";
+import { createAssistantMessageEventStream, isRetryableAssistantError, normalizeContext, Type } from "@earendil-works/pi-ai";
+import type { Api, Message, Model, Tool } from "@earendil-works/pi-ai";
 
 function fakeModel(id: string): Model<Api> {
 	return {
@@ -152,6 +153,65 @@ async function streamAntigravityOnce(
 	);
 	return (await stream.result()) as { stopReason: string; errorMessage?: string };
 }
+
+test("transcript adapter supports legacy contexts without a transcript subpath", () => {
+	const tool: Tool = {
+		name: "lookup",
+		description: "Look up a value",
+		parameters: Type.Object({}),
+	};
+	const legacyMessages: Message[] = [{ role: "user", content: "hello", timestamp: 1 }];
+
+	assert.equal(
+		getCurrentSystemPrompt({
+			systemPrompt: "legacy prompt",
+			messages: legacyMessages,
+			tools: [tool],
+		}),
+		"legacy prompt",
+	);
+	assert.deepEqual(
+		getCurrentTools({
+			systemPrompt: "legacy prompt",
+			messages: legacyMessages,
+			tools: [tool],
+		}),
+		[tool],
+	);
+});
+
+test("transcript adapter replays normalized system deltas", () => {
+	const firstTool: Tool = {
+		name: "first",
+		description: "First tool",
+		parameters: Type.Object({}),
+	};
+	const secondTool: Tool = {
+		name: "second",
+		description: "Second tool",
+		parameters: Type.Object({}),
+	};
+	const messages: Message[] = [
+		{
+			role: "system",
+			content: "base",
+			sections: { project: "old", removed: "gone" },
+			toolsAdded: [firstTool],
+			timestamp: 0,
+		},
+		{
+			role: "system",
+			content: "delta",
+			sections: { project: "new", removed: null },
+			toolsRemoved: [{ name: firstTool.name }],
+			toolsAdded: [secondTool],
+			timestamp: 1,
+		},
+	];
+
+	assert.equal(getCurrentSystemPrompt({ messages }), "base\n\ndelta\n\nnew");
+	assert.deepEqual(getCurrentTools({ messages }), [secondTool]);
+});
 
 /* ------------------------------- models.ts ------------------------------- */
 

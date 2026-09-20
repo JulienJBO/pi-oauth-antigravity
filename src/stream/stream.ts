@@ -12,7 +12,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "@earendil-works/pi-ai/api/constrained-sampling";
 import { requiresToolCallId, supportsGoogleStrictToolSampling } from "@earendil-works/pi-ai/api/google-shared";
-import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
+import { getCurrentSystemPrompt, getCurrentTools } from "./transcript.js";
 import {
   antigravityHeaders,
   endpointCandidates,
@@ -531,7 +531,7 @@ export function buildRequest(
   runtimeModel: string,
   sessionState?: AntigravitySessionState,
 ): AntigravityGenerateRequest {
-  const systemPrompt = getCurrentSystemPrompt(context.messages);
+  const systemPrompt = getCurrentSystemPrompt(context);
   const request: GeminiRequestBody = {
     contents: convertMessages(model, context, runtimeModel),
     systemInstruction: {
@@ -556,7 +556,7 @@ export function buildRequest(
 
   const isClaude = model.id.startsWith("claude-") || runtimeModel.startsWith("claude-");
   const tools = convertTools(
-    getCurrentTools(context.messages),
+    getCurrentTools(context),
     isClaude || model.id.startsWith("gpt-oss-"),
     supportsGoogleStrictToolSampling(model.id),
   );
