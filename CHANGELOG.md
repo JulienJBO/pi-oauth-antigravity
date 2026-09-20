@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.2] - 2026-09-20
+
+### Changed
+- Updated the Pi dependencies to 0.86.0 and migrated the provider to normalized `TranscriptContext` prompts and tool declarations.
+
+### Fixed
+- **Gemini 3 tool schemas now use Pi's strict-prefer contract** before `VALIDATED` tool calling, preserving nullable optional arguments and rejecting unknown properties at the model boundary.
+- **Gemini 3 tool-call replay now preserves matching sanitized IDs** in both function calls and function responses, reducing malformed or unexpected function-call failures.
+
 ## [0.1.1] - 2026-09-15
 
 ### Fixed

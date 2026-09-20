@@ -72,7 +72,7 @@ pi -e /path/to/pi-oauth-antigravity/dist/index.js
 # Install dependencies
 npm install
 
-# Run unit tests (42 tests)
+# Run unit tests (50 tests)
 npm test
 
 # Typecheck

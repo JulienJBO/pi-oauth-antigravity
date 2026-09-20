@@ -56,7 +56,7 @@ import {
 	parseImageCommandArgs,
 	resolveImageSavePath,
 } from "../src/image/image.js";
-import { createAssistantMessageEventStream, isRetryableAssistantError } from "@earendil-works/pi-ai";
+import { createAssistantMessageEventStream, isRetryableAssistantError, normalizeContext } from "@earendil-works/pi-ai";
 import type { Model, Api } from "@earendil-works/pi-ai";
 
 function fakeModel(id: string): Model<Api> {
@@ -139,10 +139,10 @@ async function streamAntigravityOnce(
 ): Promise<{ stopReason: string; errorMessage?: string }> {
 	const stream = streamAntigravity(
 		fakeModel("gemini-3.8-flash"),
-		{
+		normalizeContext({
 			systemPrompt: "You are pi.",
 			messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-		} as never,
+		} as never),
 		{
 			apiKey: JSON.stringify({ token: "token-1", projectId: "project-1" }),
 			sessionId,
@@ -313,6 +313,45 @@ test("convertMessages drops unsigned tool calls on gemini runtimes to user obser
 	assert.ok(observation && "text" in observation && observation.text.includes("file body"));
 });
 
+test("convertMessages keeps Gemini 3 tool-call ids in function calls and responses", () => {
+	const contents = convertMessages(
+		fakeModel("gemini-3.7-flash"),
+		{
+			messages: [
+				{ role: "user", content: [{ type: "text", text: "q" }] },
+				{
+					role: "assistant",
+					provider: PROVIDER_ID,
+					model: "gemini-3.7-flash",
+					stopReason: "toolUse",
+					content: [
+						{
+							type: "toolCall",
+							id: "call|1",
+							name: "read",
+							arguments: { path: "a.ts" },
+							thoughtSignature: "QUJDREVGR0g=",
+						},
+					],
+				},
+				{ role: "toolResult", toolCallId: "call|1", toolName: "read", isError: false, content: [{ type: "text", text: "file body" }] },
+			],
+		} as never,
+		"gemini-3.7-flash-high",
+	);
+	const parts = contents.flatMap((c) => c.parts);
+	const call = parts.find((p) => "functionCall" in p);
+	assert.ok(call && "functionCall" in call);
+	assert.deepEqual(call.functionCall, {
+		name: "read",
+		args: { path: "a.ts" },
+		id: "call_1",
+	});
+	const response = parts.find((p) => "functionResponse" in p);
+	assert.ok(response && "functionResponse" in response);
+	assert.equal(response.functionResponse.id, "call_1");
+});
+
 test("convertMessages keeps unsigned claude tool calls with sanitized ids", () => {
 	const contents = convertMessages(
 		fakeModel("claude-sonnet-4-6"),
@@ -399,6 +438,60 @@ test("convertTools claude bridge allowlist drops unknown keywords", () => {
 	assert.equal(prop.format, undefined);
 });
 
+test("convertTools applies Pi 0.86 preferred strict schemas for Gemini 3", () => {
+	const tools = [
+		{
+			name: "read",
+			description: "read",
+			parameters: {
+				type: "object",
+				required: ["path"],
+				properties: {
+					path: { type: "string" },
+					offset: { type: "number" },
+				},
+			},
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
+		},
+	] as never[];
+	const out = convertTools(tools, false, true);
+	const schema = out?.[0]?.functionDeclarations[0]?.parametersJsonSchema as {
+		required: string[];
+		additionalProperties: boolean;
+		properties: { offset: { anyOf: unknown[] } };
+	};
+	assert.deepEqual(schema.required, ["path", "offset"]);
+	assert.equal(schema.additionalProperties, false);
+	assert.deepEqual(schema.properties.offset.anyOf, [{ type: "number" }, { type: "null" }]);
+});
+
+test("convertTools leaves preferred schemas unchanged when strict sampling is unsupported", () => {
+	const tools = [
+		{
+			name: "read",
+			description: "read",
+			parameters: {
+				type: "object",
+				required: ["path"],
+				properties: {
+					path: { type: "string" },
+					offset: { type: "number" },
+				},
+			},
+			constrainedSampling: { type: "json_schema", strict: "prefer" },
+		},
+	] as never[];
+	const out = convertTools(tools, false, false);
+	const schema = out?.[0]?.functionDeclarations[0]?.parametersJsonSchema as {
+		required: string[];
+		additionalProperties?: unknown;
+		properties: { offset: { type: string; anyOf?: unknown[] } };
+	};
+	assert.deepEqual(schema.required, ["path"]);
+	assert.equal(schema.additionalProperties, undefined);
+	assert.deepEqual(schema.properties.offset, { type: "number" });
+});
+
 test("mapStopReason maps backend finish reasons", () => {
 	assert.equal(mapStopReason("STOP"), "stop");
 	assert.equal(mapStopReason("MAX_TOKENS"), "length");
@@ -410,11 +503,22 @@ test("buildRequest shapes the Cloud Code Assist envelope", () => {
 	const model = fakeModel("gemini-3.7-flash");
 	const request = buildRequest(
 		model,
-		{
+		normalizeContext({
 			systemPrompt: "You are pi.",
 			messages: [{ role: "user", content: [{ type: "text", text: "hello" }] }],
-			tools: [{ name: "read", description: "d", parameters: { type: "object", properties: {} } }],
-		} as never,
+			tools: [
+				{
+					name: "read",
+					description: "d",
+					parameters: {
+						type: "object",
+						required: ["path"],
+						properties: { path: { type: "string" }, offset: { type: "number" } },
+					},
+					constrainedSampling: { type: "json_schema", strict: "prefer" },
+				},
+			],
+		} as never),
 		"project-1",
 		{ sessionId: "sess-42", reasoning: "high" } as never,
 		"gemini-3.7-flash-high",
@@ -428,7 +532,9 @@ test("buildRequest shapes the Cloud Code Assist envelope", () => {
 	assert.equal(request.request.generationConfig?.thinkingConfig?.thinkingLevel, "HIGH");
 	assert.equal(request.request.generationConfig?.maxOutputTokens, 65536);
 	assert.equal(request.request.toolConfig?.functionCallingConfig.mode, "VALIDATED");
-	assert.ok(request.request.tools?.[0]?.functionDeclarations[0]);
+	const declaration = request.request.tools?.[0]?.functionDeclarations[0];
+	assert.ok(declaration);
+	assert.deepEqual((declaration.parametersJsonSchema as { required: string[] }).required, ["path", "offset"]);
 });
 
 test("friendly errors are actionable and redacted", () => {
@@ -852,11 +958,11 @@ test("antigravityRequestEnvelope preserves session identity and chains last_exec
 test("buildRequest advances stepIndex and retains sessionId and trajectory across turns", () => {
 	clearAntigravitySessions();
 	const model = fakeModel("gemini-3.8-flash");
-	const context = {
+	const context = normalizeContext({
 		messages: [
 			{ role: "user", content: [{ type: "text", text: "task step 1" }] },
 		],
-	} as never;
+	} as never);
 
 	const req1 = buildRequest(model, context, "proj-1", {}, "gemini-3.8-flash-high");
 	assert.match(req1.request.sessionId!, /^-[0-9]+$/);

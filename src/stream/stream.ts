@@ -4,12 +4,15 @@ import {
   type Api,
   type AssistantMessage,
   type AssistantMessageEventStream,
-  type Context,
   type Model,
+  type TranscriptContext,
   type TextContent,
   type Tool,
   type ToolCall,
 } from "@earendil-works/pi-ai";
+import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "@earendil-works/pi-ai/api/constrained-sampling";
+import { requiresToolCallId, supportsGoogleStrictToolSampling } from "@earendil-works/pi-ai/api/google-shared";
+import { getCurrentSystemPrompt, getCurrentTools } from "@earendil-works/pi-ai/utils/transcript";
 import {
   antigravityHeaders,
   endpointCandidates,
@@ -143,12 +146,7 @@ function sanitizeToolCallId(id: string, fallbackName?: string): string {
 }
 
 function toolCallIdNeeded(modelId: string, runtimeModel: string): boolean {
-  return (
-    modelId.startsWith("claude-") ||
-    modelId.startsWith("gpt-oss-") ||
-    runtimeModel.startsWith("claude-") ||
-    runtimeModel.startsWith("gpt-oss-")
-  );
+  return requiresToolCallId(modelId) || requiresToolCallId(runtimeModel);
 }
 
 const base64SignaturePattern = /^[A-Za-z0-9+/]+={0,2}$/;
@@ -229,11 +227,12 @@ function appendTurn(contents: GeminiContent[], role: GeminiRole, parts: GeminiPa
 /** Exported for unit tests. */
 export function convertMessages(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   runtimeModel: string,
 ): GeminiContent[] {
   const contents: GeminiContent[] = [];
   const requiresSig = geminiRequiresThoughtSignature(runtimeModel);
+  const includeToolCallId = toolCallIdNeeded(model.id, runtimeModel);
   const droppedToolCallIds = new Map<string, string>();
   for (const msg of context.messages) {
     if (msg.role === "user") {
@@ -294,7 +293,7 @@ export function convertMessages(
               functionCall: {
                 name: block.name,
                 args: block.arguments ?? {},
-                ...(toolCallIdNeeded(model.id, runtimeModel)
+                ...(includeToolCallId
                   ? { id: sanitizeToolCallId(block.id || "", block.name) }
                   : {}),
               },
@@ -312,9 +311,7 @@ export function convertMessages(
       const responseText = text || (msg.isError ? "Tool failed" : "");
       const imageParts = asImageParts(msg.content);
       const rawId = msg.toolCallId || "";
-      const sanitizedId = toolCallIdNeeded(model.id, runtimeModel)
-        ? sanitizeToolCallId(rawId, msg.toolName)
-        : rawId;
+      const sanitizedId = includeToolCallId ? sanitizeToolCallId(rawId, msg.toolName) : rawId;
       const droppedArgs = requiresSig
         ? (droppedToolCallIds.get(rawId) ??
           droppedToolCallIds.get(sanitizedId) ??
@@ -332,7 +329,7 @@ export function convertMessages(
           functionResponse: {
             name: msg.toolName,
             response: msg.isError ? { error: responseText } : { output: responseText },
-            ...(toolCallIdNeeded(model.id, runtimeModel)
+            ...(includeToolCallId
               ? { id: sanitizeToolCallId(msg.toolCallId || "", msg.toolName) }
               : {}),
           },
@@ -491,12 +488,17 @@ function normalizeCustomToolSchema(schema: unknown): unknown {
 export function convertTools(
   tools: Tool[] | undefined,
   useLegacyParameters = false,
+  supportsStrictMode = false,
 ): { functionDeclarations: GeminiFunctionDeclaration[] }[] | undefined {
   if (!tools?.length) return undefined;
   return [
     {
       functionDeclarations: tools.map((tool) => {
-        const dereferenced = dereferenceSchema(tool.parameters);
+        const parameters = getJsonSchemaToolParameters(
+          tool,
+          resolveJsonSchemaStrictSampling(tool, supportsStrictMode),
+        );
+        const dereferenced = dereferenceSchema(parameters);
         const rootObject = ensureRootObjectSchema(dereferenced);
         const schema = stripMetaSchema(rootObject);
         return {
@@ -523,18 +525,19 @@ function mapToolChoiceMode(
 /** Exported for unit tests. */
 export function buildRequest(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   projectId: string,
   options: AntigravityStreamOptions,
   runtimeModel: string,
   sessionState?: AntigravitySessionState,
 ): AntigravityGenerateRequest {
+  const systemPrompt = getCurrentSystemPrompt(context.messages);
   const request: GeminiRequestBody = {
     contents: convertMessages(model, context, runtimeModel),
     systemInstruction: {
       role: GeminiRole.User,
-      parts: context.systemPrompt
-        ? [{ text: sanitizeText(context.systemPrompt) }]
+      parts: systemPrompt
+        ? [{ text: sanitizeText(systemPrompt) }]
         : [{ text: ANTIGRAVITY_SYSTEM_INSTRUCTION }, { text: ANTIGRAVITY_NO_PREAMBLE_INSTRUCTION }],
     },
   };
@@ -552,7 +555,11 @@ export function buildRequest(
   if (Object.keys(generationConfig).length) request.generationConfig = generationConfig;
 
   const isClaude = model.id.startsWith("claude-") || runtimeModel.startsWith("claude-");
-  const tools = convertTools(context.tools, isClaude || model.id.startsWith("gpt-oss-"));
+  const tools = convertTools(
+    getCurrentTools(context.messages),
+    isClaude || model.id.startsWith("gpt-oss-"),
+    supportsGoogleStrictToolSampling(model.id),
+  );
   if (tools) {
     request.tools = tools;
     request.toolConfig = {
@@ -868,7 +875,7 @@ export async function streamResponse(
 
 export function streamAntigravity(
   model: Model<Api>,
-  context: Context,
+  context: TranscriptContext,
   options?: AntigravityStreamOptions,
 ): AssistantMessageEventStream {
   const stream = createAssistantMessageEventStream();
