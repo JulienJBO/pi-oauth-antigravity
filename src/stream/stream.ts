@@ -11,7 +11,7 @@ import {
   type ToolCall,
 } from "@earendil-works/pi-ai";
 import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "@earendil-works/pi-ai/api/constrained-sampling";
-import { requiresToolCallId, supportsGoogleStrictToolSampling } from "@earendil-works/pi-ai/api/google-shared";
+import { requiresToolCallId } from "@earendil-works/pi-ai/api/google-shared";
 import { getCurrentSystemPrompt, getCurrentTools } from "./transcript.js";
 import {
   antigravityHeaders,
@@ -558,7 +558,8 @@ export function buildRequest(
   const tools = convertTools(
     getCurrentTools(context),
     isClaude || model.id.startsWith("gpt-oss-"),
-    supportsGoogleStrictToolSampling(model.id),
+    // Keep Antigravity on the plain-schema compatibility path with VALIDATED calls.
+    false,
   );
   if (tools) {
     request.tools = tools;

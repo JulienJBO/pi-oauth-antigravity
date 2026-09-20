@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.4] - 2026-09-20
+
+### Fixed
+- Kept Antigravity tool declarations on the plain JSON-schema compatibility path while retaining `VALIDATED` tool calling, so optional arguments are not rewritten as required by Pi's strict-prefer schema helper.
+
 ## [0.1.3] - 2026-09-20
 
 ### Fixed

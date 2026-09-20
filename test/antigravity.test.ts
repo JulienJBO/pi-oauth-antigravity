@@ -559,7 +559,7 @@ test("mapStopReason maps backend finish reasons", () => {
 	assert.equal(mapStopReason(undefined), "stop");
 });
 
-test("buildRequest shapes the Cloud Code Assist envelope", () => {
+test("buildRequest sends plain schemas to Cloud Code Assist VALIDATED mode", () => {
 	const model = fakeModel("gemini-3.7-flash");
 	const request = buildRequest(
 		model,
@@ -594,7 +594,14 @@ test("buildRequest shapes the Cloud Code Assist envelope", () => {
 	assert.equal(request.request.toolConfig?.functionCallingConfig.mode, "VALIDATED");
 	const declaration = request.request.tools?.[0]?.functionDeclarations[0];
 	assert.ok(declaration);
-	assert.deepEqual((declaration.parametersJsonSchema as { required: string[] }).required, ["path", "offset"]);
+	const schema = declaration.parametersJsonSchema as {
+		required: string[];
+		additionalProperties?: unknown;
+		properties: { offset: { type: string; anyOf?: unknown[] } };
+	};
+	assert.deepEqual(schema.required, ["path"]);
+	assert.equal(schema.additionalProperties, undefined);
+	assert.deepEqual(schema.properties.offset, { type: "number" });
 });
 
 test("friendly errors are actionable and redacted", () => {
