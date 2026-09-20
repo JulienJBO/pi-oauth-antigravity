@@ -12,7 +12,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - Added `test/loader-compat.test.ts` (loads the built `dist/` through Pi's real `discoverAndLoadExtensions` loader, with the bundle isolated outside the repo so dev `node_modules` cannot mask the failure) and `test/dist-imports.test.ts` (static guard over `dist/**`).
 
 ### Changed
-- Added a `prepare` script (`npm run build`) so git installs build `dist/`, which is not committed.
+- Commit `dist/` on this branch so `pi install git:…` works: pi runs `npm install --omit=dev` in the clone, which cannot compile TypeScript.
 
 ## [0.1.4] - 2026-09-20
 
