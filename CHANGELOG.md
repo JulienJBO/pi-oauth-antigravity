@@ -5,6 +5,15 @@ All notable changes to this project will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Fork] - 2026-09-20
+
+### Fixed
+- **Extension loads again under Pi's current extension runtime.** Replaced the runtime imports of `@earendil-works/pi-ai/api/constrained-sampling` and `@earendil-works/pi-ai/api/google-shared` with locally vendored helpers (`src/stream/constrained-sampling.ts`, `src/stream/google-compat.ts`, derived from pi-ai 0.86.1, MIT): Pi's extension loader only resolves the pi-ai root (compat), `/compat`, `/oauth` and `/providers/all`, so deep `api/*` imports fail with `Cannot find module` at load time. Same strategy as the 0.1.3 transcript fix.
+- Added `test/loader-compat.test.ts` (loads the built `dist/` through Pi's real `discoverAndLoadExtensions` loader, with the bundle isolated outside the repo so dev `node_modules` cannot mask the failure) and `test/dist-imports.test.ts` (static guard over `dist/**`).
+
+### Changed
+- Commit `dist/` on this branch so `pi install git:…` works: pi runs `npm install --omit=dev` in the clone, which cannot compile TypeScript.
+
 ## [0.1.4] - 2026-09-20
 
 ### Fixed

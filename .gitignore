@@ -1,5 +1,7 @@
 node_modules/
-dist/
+# Fork: commit dist/ so `pi install git:...` works — pi runs
+# `npm install --omit=dev` in the clone, which cannot build TypeScript.
+!dist/
 *.tgz
 .DS_Store
 .env

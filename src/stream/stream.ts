@@ -10,8 +10,8 @@ import {
   type Tool,
   type ToolCall,
 } from "@earendil-works/pi-ai";
-import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "@earendil-works/pi-ai/api/constrained-sampling";
-import { requiresToolCallId } from "@earendil-works/pi-ai/api/google-shared";
+import { getJsonSchemaToolParameters, resolveJsonSchemaStrictSampling } from "./constrained-sampling.js";
+import { requiresToolCallId } from "./google-compat.js";
 import { getCurrentSystemPrompt, getCurrentTools } from "./transcript.js";
 import {
   antigravityHeaders,
