@@ -70,7 +70,52 @@ async function withUsage(
   }
 }
 
+type MultiPassAdapterRegistry = Map<string, unknown>;
+type MultiPassGlobal = typeof globalThis & {
+  __PI_MULTI_PASS_PROVIDER_ADAPTERS_V1__?: MultiPassAdapterRegistry;
+};
+
+/**
+ * Publish the native Antigravity transport/OAuth/model catalog for pi-multi-pass.
+ * The registry is intentionally process-local: it contains functions and is only
+ * used to let separately installed Pi extensions cooperate without a hard package dependency.
+ */
+function registerMultiPassAdapter(): void {
+  const scope = globalThis as MultiPassGlobal;
+  const registry = scope.__PI_MULTI_PASS_PROVIDER_ADAPTERS_V1__ ??= new Map<string, unknown>();
+  const adapter = {
+    providerId: PROVIDER_ID,
+    displayName: PROVIDER_NAME,
+    baseUrl: DEFAULT_ENDPOINT,
+    api: ANTIGRAVITY_API,
+    buildOAuth(index: number) {
+      return {
+        name: `Antigravity #${index}`,
+        isSubscription: true,
+        usesCallbackServer: true,
+        login: loginAntigravity,
+        refreshToken: refreshAntigravityToken,
+        getApiKey,
+      };
+    },
+    getModels(providerName: string, index: number) {
+      return ANTIGRAVITY_MODELS.map((model) => ({
+        ...model,
+        provider: providerName,
+        api: ANTIGRAVITY_API,
+        baseUrl: DEFAULT_ENDPOINT,
+        name: `${model.name} (#${index})`,
+      }));
+    },
+  };
+  registry.set(PROVIDER_ID, adapter);
+  // Compatibility with pi-multi-pass <=1.5.x configurations.
+  registry.set("google-antigravity", adapter);
+}
+
 export default function (pi: ExtensionAPI): void {
+  registerMultiPassAdapter();
+
   // Open the TLS connection up front so the first message of a session does not pay
   // the handshake. Opt out with ANTIGRAVITY_NO_PREWARM=1.
   const primaryEndpoint = endpointCandidates()[0];
