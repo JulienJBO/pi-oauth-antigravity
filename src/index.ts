@@ -127,7 +127,7 @@ export default function (pi: ExtensionAPI): void {
     streamSimple: streamAntigravity,
   });
 
-  const providerConfig = {
+  pi.registerProvider(PROVIDER_ID, {
     name: PROVIDER_NAME,
     baseUrl: DEFAULT_ENDPOINT,
     api: ANTIGRAVITY_API,
@@ -139,13 +139,24 @@ export default function (pi: ExtensionAPI): void {
       getApiKey,
     },
     streamSimple: streamAntigravity,
-  };
+  });
 
-  pi.registerProvider(PROVIDER_ID, providerConfig);
   // Override Pi's builtin google-antigravity provider too. This keeps existing
   // configs and pi-multi-pass pools working while routing account #1 through
   // the same cache-aware transport as additional accounts.
-  pi.registerProvider("google-antigravity", providerConfig);
+  pi.registerProvider("google-antigravity", {
+    name: PROVIDER_NAME,
+    baseUrl: DEFAULT_ENDPOINT,
+    api: ANTIGRAVITY_API,
+    models: ANTIGRAVITY_MODELS,
+    oauth: {
+      name: PROVIDER_NAME,
+      login: loginAntigravity,
+      refreshToken: refreshAntigravityToken,
+      getApiKey,
+    },
+    streamSimple: streamAntigravity,
+  });
 
   pi.registerCommand("antigravity.usage", {
     description: "Show Antigravity shared quota pools (Gemini / Claude+GPT, 5h + weekly)",
