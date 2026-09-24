@@ -668,7 +668,7 @@ function createOutput(model: Model<Api>): AssistantMessage {
     role: "assistant",
     content: [],
     api: ANTIGRAVITY_API,
-    provider: PROVIDER_ID,
+    provider: model.provider || PROVIDER_ID,
     model: model.id,
     usage: {
       input: 0,
@@ -912,7 +912,7 @@ export function streamAntigravity(
       }
 
       const sid = opts.sessionId || deriveAntigravitySessionId(context);
-      const sessionState = getOrCreateAntigravitySession(sid);
+      const sessionState = getOrCreateAntigravitySession(sid, creds.accountKey);
 
       const runtimeCandidates = [initialRuntimeModel];
       const fallback = getFallbackRuntimeModel(initialRuntimeModel, effort);
