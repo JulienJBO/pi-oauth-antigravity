@@ -24,6 +24,8 @@ export type AntigravityOAuthCredentials = OAuthCredentials & {
 export type AntigravityApiKey = {
   token: string;
   projectId: string;
+  /** Stable per-Google-account identity used to isolate prompt-cache trajectories. */
+  accountKey?: string;
 };
 
 export type DynamicModelInfo = {

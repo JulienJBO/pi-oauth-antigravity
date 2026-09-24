@@ -76,6 +76,8 @@ export interface AntigravitySessionState {
   agentId: string;
   trajectoryId: string;
   sessionId: string;
+  /** Stable account identity; separates trajectory/cache state across Multi-Pass accounts. */
+  accountKey?: string;
   stepIndex: number;
   lastExecutionId?: string;
   lastGoodEndpoint?: string;
@@ -85,6 +87,10 @@ export interface AntigravitySessionState {
 const sessionStates = new Map<string, AntigravitySessionState>();
 const MAX_SESSIONS = 200;
 let sessionsLoaded = false;
+
+function antigravitySessionStorageKey(sessionId: string, accountKey?: string): string {
+  return accountKey ? `${sessionId}::${accountKey}` : sessionId;
+}
 
 function getSessionsFilePath(): string {
   const envPath = antigravityEnv("SESSIONS_FILE");
@@ -107,7 +113,8 @@ function loadPersistedSessions(): void {
     if (Array.isArray(parsed)) {
       for (const item of parsed) {
         if (item && typeof item === "object" && typeof item.sessionId === "string") {
-          sessionStates.set(item.sessionId, item);
+          const accountKey = typeof item.accountKey === "string" ? item.accountKey : undefined;
+          sessionStates.set(antigravitySessionStorageKey(item.sessionId, accountKey), item);
         }
       }
     }
@@ -144,23 +151,28 @@ export function clearAntigravitySessions(): void {
   }
 }
 
-export function getOrCreateAntigravitySession(sessionId: string): AntigravitySessionState {
+export function getOrCreateAntigravitySession(
+  sessionId: string,
+  accountKey?: string,
+): AntigravitySessionState {
   loadPersistedSessions();
-  let state = sessionStates.get(sessionId);
+  const storageKey = antigravitySessionStorageKey(sessionId, accountKey);
+  let state = sessionStates.get(storageKey);
   if (!state) {
     state = {
       agentId: randomUUID(),
       trajectoryId: randomUUID(),
       sessionId,
+      accountKey,
       stepIndex: 1,
       lastUsedAt: Date.now(),
     };
   } else {
     state.stepIndex += 1;
     state.lastUsedAt = Date.now();
-    sessionStates.delete(sessionId);
+    sessionStates.delete(storageKey);
   }
-  sessionStates.set(sessionId, state);
+  sessionStates.set(storageKey, state);
   while (sessionStates.size > MAX_SESSIONS) {
     const oldest = sessionStates.keys().next().value;
     if (!oldest) break;

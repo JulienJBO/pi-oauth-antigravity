@@ -855,9 +855,11 @@ test("project id precedence: env over credential over default", () => {
 	assert.equal(resolveProjectId({ token: "t" }), defaultProjectId("antigravity-default"));
 });
 
-test("parseApiKey requires token and projectId", () => {
+test("parseApiKey requires token and projectId and preserves an optional account key", () => {
 	const parsed = parseApiKey(JSON.stringify({ token: "tok", projectId: "proj" }));
 	assert.deepEqual(parsed, { token: "tok", projectId: "proj" });
+	const scoped = parseApiKey(JSON.stringify({ token: "tok", projectId: "proj", accountKey: "acct-a" }));
+	assert.deepEqual(scoped, { token: "tok", projectId: "proj", accountKey: "acct-a" });
 	assert.throws(() => parseApiKey(undefined), /No Antigravity OAuth credentials/);
 	assert.throws(() => parseApiKey(JSON.stringify({ token: "tok" })), /Invalid Antigravity credentials/);
 });
@@ -988,6 +990,27 @@ test("getOrCreateAntigravitySession manages sticky agentId, trajectoryId and inc
 	assert.notEqual(sOther.trajectoryId, s1.trajectoryId);
 });
 
+test("getOrCreateAntigravitySession isolates cache trajectory state by account", () => {
+	clearAntigravitySessions();
+	const sid = "-4242424242";
+	const a1 = getOrCreateAntigravitySession(sid, "acct-a");
+	a1.lastExecutionId = "resp-a-1";
+	persistAntigravitySessions();
+
+	const b1 = getOrCreateAntigravitySession(sid, "acct-b");
+	assert.equal(b1.sessionId, sid);
+	assert.equal(b1.stepIndex, 1);
+	assert.equal(b1.lastExecutionId, undefined);
+	assert.notEqual(b1.agentId, a1.agentId);
+	assert.notEqual(b1.trajectoryId, a1.trajectoryId);
+
+	const a2 = getOrCreateAntigravitySession(sid, "acct-a");
+	assert.equal(a2.stepIndex, 2);
+	assert.equal(a2.agentId, a1.agentId);
+	assert.equal(a2.trajectoryId, a1.trajectoryId);
+	assert.equal(a2.lastExecutionId, "resp-a-1");
+});
+
 test("getOrCreateAntigravitySession persists session state across process restarts", () => {
 	clearAntigravitySessions();
 	const sid = "-7777777777";
@@ -1059,13 +1082,19 @@ test("request envelope labels use claude flags and model enums", () => {
 
 /* ------------------------------- auth/oauth ------------------------------ */
 
-test("getApiKey serializes token + projectId for the stream layer", () => {
+test("getApiKey serializes token + projectId and a stable per-account cache key", () => {
 	const key = getApiKey({ access: "tok", refresh: "r", expires: 0 });
-	const parsed = JSON.parse(key) as { token: string; projectId: string };
+	const parsed = JSON.parse(key) as { token: string; projectId: string; accountKey: string };
 	assert.equal(parsed.token, "tok");
 	assert.equal(parsed.projectId, defaultProjectId("antigravity-default"));
-	const withProject = getApiKey({ access: "tok", refresh: "r", expires: 0, projectId: "p9", email: "me@x.com" });
-	assert.equal((JSON.parse(withProject) as { projectId: string }).projectId, "p9");
+	assert.ok(parsed.accountKey.length > 0);
+
+	const first = JSON.parse(getApiKey({ access: "tok-1", refresh: "r1", expires: 0, projectId: "p9", email: "Me@X.com" })) as { accountKey: string; projectId: string };
+	const refreshed = JSON.parse(getApiKey({ access: "tok-2", refresh: "r2", expires: 0, projectId: "p9", email: "me@x.com" })) as { accountKey: string };
+	const other = JSON.parse(getApiKey({ access: "tok-3", refresh: "r3", expires: 0, projectId: "p10", email: "other@x.com" })) as { accountKey: string };
+	assert.equal(first.projectId, "p9");
+	assert.equal(first.accountKey, refreshed.accountKey);
+	assert.notEqual(first.accountKey, other.accountKey);
 });
 
 /* -------------------------------- image.ts ------------------------------- */

@@ -435,9 +435,15 @@ export async function refreshAntigravityToken(
 
 export function getApiKey(credentials: OAuthCredentials): string {
   const email = credentialEmail(credentials);
+  const projectId = credentialProjectId(credentials) || defaultProjectId(email || "antigravity-default");
+  // Access tokens rotate frequently and must never be part of the cache identity.
+  // Prefer the normalized Google account email, then the long-lived refresh token.
+  const accountIdentity = email?.trim().toLowerCase() || credentials.refresh || projectId;
+  const accountKey = createHash("sha256").update(accountIdentity).digest("hex").slice(0, 24);
   return JSON.stringify({
     token: credentials.access,
-    projectId: credentialProjectId(credentials) || defaultProjectId(email || "antigravity-default"),
+    projectId,
+    accountKey,
   });
 }
 
