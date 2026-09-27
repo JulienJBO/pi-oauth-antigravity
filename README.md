@@ -46,29 +46,40 @@ Or run directly from source:
 pi -e /path/to/pi-oauth-antigravity/dist/index.js
 ```
 
-## This Fork (fix/pi-extension-runtime-compat)
+## Why This Fork Still Exists
 
-This branch restores compatibility with current Pi versions. Upstream v0.1.4
-fails to load because it imports `@earendil-works/pi-ai/api/constrained-sampling`
-and `@earendil-works/pi-ai/api/google-shared` at runtime: Pi's extension loader
-only resolves the `pi-ai` root (compat), `/compat`, `/oauth` and `/providers/all`,
-so deep `api/*` imports break with `Cannot find module`. The fix vendors those
-two helpers locally (MIT, from pi-ai 0.86.1) — same strategy upstream used for
-the transcript import in v0.1.3. Behavior is unchanged.
+This fork tracks upstream 0.1.5 but keeps two compatibility fixes that are still
+needed with current Pi:
 
-Install this branch with:
+1. **Pi extension-loader compatibility.** Upstream imports public
+   `@earendil-works/pi-ai/api/*` subpaths at runtime, but Pi's extension loader
+   does not expose those deep imports to git-installed extensions. This fork
+   vendors the two small compatibility helpers locally so the extension loads
+   reliably.
+2. **Multi-account cache isolation.** Antigravity trajectory state
+   (`last_execution_id`, agent/trajectory IDs and endpoint affinity) is scoped
+   by a stable Google-account key. Switching from account A to account B cannot
+   accidentally reuse account A's cache trajectory.
+
+The fork also includes upstream 0.1.5's actionable handling for Google
+`403 VALIDATION_REQUIRED`: when Google requires account verification, Pi can
+surface the verification URL instead of collapsing the failure into a generic
+error.
+
+Install the maintained `main` branch:
 
 ```bash
-pi install git:github.com/JulienJBO/pi-oauth-antigravity@fix/pi-extension-runtime-compat
+pi install git:github.com/JulienJBO/pi-oauth-antigravity
 ```
 
-`dist/` is committed on this branch because pi's git installs run
-`npm install --omit=dev`, which cannot build TypeScript.
+`dist/` is intentionally committed because Pi's git-package installation runs
+without development dependencies and therefore cannot compile this TypeScript
+package during installation. The committed build is regenerated from the tested
+source.
 
-**Returning to upstream**: once upstream publishes an equivalent fix, remove the
-git package (`pi remove`) and reinstall `npm:@heyhuynhgiabuu/pi-oauth-antigravity`.
-To resync this fork with upstream changes: `git fetch upstream && git rebase
-upstream/main`, then `npm run build` and commit the refreshed `dist/`.
+The fork has been validated with Pi 0.87.1. Once upstream provides both equivalent
+loader compatibility and account-scoped cache/session state, this fork can be
+retired in favor of `npm:@heyhuynhgiabuu/pi-oauth-antigravity`.
 
 ## Setup & Login
 
@@ -96,7 +107,7 @@ upstream/main`, then `npm run build` and commit the refreshed `dist/`.
 # Install dependencies
 npm install
 
-# Run unit tests (64 tests)
+# Run unit tests
 npm test
 
 # Typecheck
