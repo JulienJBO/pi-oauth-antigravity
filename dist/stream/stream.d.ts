@@ -19,6 +19,18 @@ export declare function convertTools(tools: Tool[] | undefined, useLegacyParamet
 export declare function buildRequest(model: Model<Api>, context: TranscriptContext, projectId: string, options: AntigravityStreamOptions, runtimeModel: string, sessionState?: AntigravitySessionState): AntigravityGenerateRequest;
 /** Exported for unit tests. */
 export declare function mapStopReason(reason: string | undefined): StopReason;
+/**
+ * Google blocks an entire account — not one model — with 403 VALIDATION_REQUIRED until
+ * the account owner completes identity/phone verification. Neither re-login nor a model
+ * switch clears it, so the actionable `validation_url` in the error details has to reach
+ * the user instead of the generic "re-login or try another model" advice.
+ */
+export interface AccountValidation {
+    message: string;
+    url?: string;
+}
+/** Exported for unit tests. */
+export declare function extractAccountValidation(text: string): AccountValidation | undefined;
 /** Exported for unit tests. */
 export declare function friendlyAntigravityError(status: number | undefined, text: string): string;
 /** Exported for unit tests. */

@@ -39,7 +39,45 @@ async function withUsage(ctx, fn) {
         emitCommandOutput(ctx, `Antigravity usage failed: ${msg}`, "warning");
     }
 }
+/**
+ * Publish the native Antigravity transport/OAuth/model catalog for pi-multi-pass.
+ * The registry is intentionally process-local: it contains functions and is only
+ * used to let separately installed Pi extensions cooperate without a hard package dependency.
+ */
+function registerMultiPassAdapter() {
+    const scope = globalThis;
+    const registry = scope.__PI_MULTI_PASS_PROVIDER_ADAPTERS_V1__ ??= new Map();
+    const adapter = {
+        providerId: PROVIDER_ID,
+        displayName: PROVIDER_NAME,
+        baseUrl: DEFAULT_ENDPOINT,
+        api: ANTIGRAVITY_API,
+        buildOAuth(index) {
+            return {
+                name: `Antigravity #${index}`,
+                isSubscription: true,
+                usesCallbackServer: true,
+                login: loginAntigravity,
+                refreshToken: refreshAntigravityToken,
+                getApiKey,
+            };
+        },
+        getModels(providerName, index) {
+            return ANTIGRAVITY_MODELS.map((model) => ({
+                ...model,
+                provider: providerName,
+                api: ANTIGRAVITY_API,
+                baseUrl: DEFAULT_ENDPOINT,
+                name: `${model.name} (#${index})`,
+            }));
+        },
+    };
+    registry.set(PROVIDER_ID, adapter);
+    // Compatibility with pi-multi-pass <=1.5.x configurations.
+    registry.set("google-antigravity", adapter);
+}
 export default function (pi) {
+    registerMultiPassAdapter();
     // Open the TLS connection up front so the first message of a session does not pay
     // the handshake. Opt out with ANTIGRAVITY_NO_PREWARM=1.
     const primaryEndpoint = endpointCandidates()[0];
@@ -51,6 +89,22 @@ export default function (pi) {
         streamSimple: streamAntigravity,
     });
     pi.registerProvider(PROVIDER_ID, {
+        name: PROVIDER_NAME,
+        baseUrl: DEFAULT_ENDPOINT,
+        api: ANTIGRAVITY_API,
+        models: ANTIGRAVITY_MODELS,
+        oauth: {
+            name: PROVIDER_NAME,
+            login: loginAntigravity,
+            refreshToken: refreshAntigravityToken,
+            getApiKey,
+        },
+        streamSimple: streamAntigravity,
+    });
+    // Override Pi's builtin google-antigravity provider too. This keeps existing
+    // configs and pi-multi-pass pools working while routing account #1 through
+    // the same cache-aware transport as additional accounts.
+    pi.registerProvider("google-antigravity", {
         name: PROVIDER_NAME,
         baseUrl: DEFAULT_ENDPOINT,
         api: ANTIGRAVITY_API,

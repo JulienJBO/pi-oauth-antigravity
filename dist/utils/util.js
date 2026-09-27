@@ -60,6 +60,9 @@ export function deriveAntigravitySessionId(context) {
 const sessionStates = new Map();
 const MAX_SESSIONS = 200;
 let sessionsLoaded = false;
+function antigravitySessionStorageKey(sessionId, accountKey) {
+    return accountKey ? `${sessionId}::${accountKey}` : sessionId;
+}
 function getSessionsFilePath() {
     const envPath = antigravityEnv("SESSIONS_FILE");
     if (envPath)
@@ -83,7 +86,8 @@ function loadPersistedSessions() {
         if (Array.isArray(parsed)) {
             for (const item of parsed) {
                 if (item && typeof item === "object" && typeof item.sessionId === "string") {
-                    sessionStates.set(item.sessionId, item);
+                    const accountKey = typeof item.accountKey === "string" ? item.accountKey : undefined;
+                    sessionStates.set(antigravitySessionStorageKey(item.sessionId, accountKey), item);
                 }
             }
         }
@@ -120,14 +124,16 @@ export function clearAntigravitySessions() {
         // Ignore error
     }
 }
-export function getOrCreateAntigravitySession(sessionId) {
+export function getOrCreateAntigravitySession(sessionId, accountKey) {
     loadPersistedSessions();
-    let state = sessionStates.get(sessionId);
+    const storageKey = antigravitySessionStorageKey(sessionId, accountKey);
+    let state = sessionStates.get(storageKey);
     if (!state) {
         state = {
             agentId: randomUUID(),
             trajectoryId: randomUUID(),
             sessionId,
+            accountKey,
             stepIndex: 1,
             lastUsedAt: Date.now(),
         };
@@ -135,9 +141,9 @@ export function getOrCreateAntigravitySession(sessionId) {
     else {
         state.stepIndex += 1;
         state.lastUsedAt = Date.now();
-        sessionStates.delete(sessionId);
+        sessionStates.delete(storageKey);
     }
-    sessionStates.set(sessionId, state);
+    sessionStates.set(storageKey, state);
     while (sessionStates.size > MAX_SESSIONS) {
         const oldest = sessionStates.keys().next().value;
         if (!oldest)

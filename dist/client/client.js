@@ -92,7 +92,9 @@ export function parseApiKey(apiKeyRaw) {
         const parsed = JSON.parse(apiKeyRaw);
         if (!parsed.token || !parsed.projectId)
             throw new Error("missing token or projectId");
-        return { token: parsed.token, projectId: parsed.projectId };
+        return parsed.accountKey
+            ? { token: parsed.token, projectId: parsed.projectId, accountKey: parsed.accountKey }
+            : { token: parsed.token, projectId: parsed.projectId };
     }
     catch (error) {
         throw new Error(`Invalid Antigravity credentials. Run /login antigravity. (${safeError(error)})`, { cause: error });
