@@ -46,6 +46,30 @@ Or run directly from source:
 pi -e /path/to/pi-oauth-antigravity/dist/index.js
 ```
 
+## This Fork (fix/pi-extension-runtime-compat)
+
+This branch restores compatibility with current Pi versions. Upstream v0.1.4
+fails to load because it imports `@earendil-works/pi-ai/api/constrained-sampling`
+and `@earendil-works/pi-ai/api/google-shared` at runtime: Pi's extension loader
+only resolves the `pi-ai` root (compat), `/compat`, `/oauth` and `/providers/all`,
+so deep `api/*` imports break with `Cannot find module`. The fix vendors those
+two helpers locally (MIT, from pi-ai 0.86.1) — same strategy upstream used for
+the transcript import in v0.1.3. Behavior is unchanged.
+
+Install this branch with:
+
+```bash
+pi install git:github.com/JulienJBO/pi-oauth-antigravity@fix/pi-extension-runtime-compat
+```
+
+`dist/` is committed on this branch because pi's git installs run
+`npm install --omit=dev`, which cannot build TypeScript.
+
+**Returning to upstream**: once upstream publishes an equivalent fix, remove the
+git package (`pi remove`) and reinstall `npm:@heyhuynhgiabuu/pi-oauth-antigravity`.
+To resync this fork with upstream changes: `git fetch upstream && git rebase
+upstream/main`, then `npm run build` and commit the refreshed `dist/`.
+
 ## Setup & Login
 
 1. Run Pi and start the OAuth login:
@@ -72,7 +96,7 @@ pi -e /path/to/pi-oauth-antigravity/dist/index.js
 # Install dependencies
 npm install
 
-# Run unit tests (50 tests)
+# Run unit tests (64 tests)
 npm test
 
 # Typecheck
