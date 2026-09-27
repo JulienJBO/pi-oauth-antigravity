@@ -8,7 +8,7 @@ import { AntigravityRequestType, AntigravityUserAgent, GeminiRole, GeminiToolCal
 import { ANTIGRAVITY_ROUTING, getMaxOutputTokens, getAntigravityRequestModelId, getFallbackRuntimeModel, getThinkingConfig, PROVIDER_ID, } from "../models/models.js";
 import { redactSecrets, safeError } from "../utils/security.js";
 import { ANTIGRAVITY_API, } from "../types/types.js";
-import { antigravityEnv, antigravityRequestEnvelope, deriveAntigravitySessionId, getOrCreateAntigravitySession, isRecord, persistAntigravitySessions, sanitizeText, } from "../utils/util.js";
+import { antigravityEnv, antigravityRequestEnvelope, asString, deriveAntigravitySessionId, getOrCreateAntigravitySession, isRecord, persistAntigravitySessions, sanitizeText, } from "../utils/util.js";
 import { antigravityFetch } from "../utils/http.js";
 export { ANTIGRAVITY_API };
 const ANTIGRAVITY_SYSTEM_INSTRUCTION = "You are Antigravity, a powerful agentic AI coding assistant designed by Google DeepMind. " +
@@ -496,6 +496,70 @@ export function mapStopReason(reason) {
         return StopReason.Length;
     return reason ? StopReason.Error : StopReason.Stop;
 }
+/**
+ * The URL is printed for the user to click, so only Google-owned https hosts are
+ * allowed. A response body is untrusted input just like any other; a foreign host here
+ * would be a ready-made phishing link.
+ */
+function safeValidationUrl(raw) {
+    const trimmed = asString(raw)?.trim();
+    if (!trimmed)
+        return undefined;
+    let url;
+    try {
+        url = new URL(trimmed);
+    }
+    catch {
+        return undefined;
+    }
+    if (url.protocol !== "https:")
+        return undefined;
+    const host = url.hostname.toLowerCase();
+    const googleOwned = host === "google.com" ||
+        host.endsWith(".google.com") ||
+        host === "googleapis.com" ||
+        host.endsWith(".googleapis.com");
+    if (!googleOwned)
+        return undefined;
+    // Return the backend's exact string (not url.toString()) so Google's params survive
+    // verbatim; redactSecrets is the belt-and-braces check that no token rode along.
+    return redactSecrets(trimmed);
+}
+/** Exported for unit tests. */
+export function extractAccountValidation(text) {
+    let parsed;
+    try {
+        parsed = JSON.parse(text);
+    }
+    catch {
+        return undefined;
+    }
+    const error = isRecord(parsed) ? parsed.error : undefined;
+    if (!isRecord(error) || !Array.isArray(error.details))
+        return undefined;
+    for (const detail of error.details) {
+        if (!isRecord(detail) || detail.reason !== "VALIDATION_REQUIRED")
+            continue;
+        const metadata = isRecord(detail.metadata) ? detail.metadata : {};
+        // Both candidates are response-body fields, so both are redacted like the rest of
+        // the backend text that reaches the user; neither can smuggle a token out.
+        const message = asString(metadata.validation_error_message) ?? asString(error.message) ?? "";
+        return {
+            message: redactSecrets(message).trim().slice(0, 200),
+            url: safeValidationUrl(metadata.validation_url),
+        };
+    }
+    return undefined;
+}
+function formatAccountValidation(validation) {
+    const next = validation.url
+        ? `complete verification at ${validation.url}`
+        : "complete Google account verification";
+    return ("Antigravity denied this account pending Google account verification (VALIDATION_REQUIRED). " +
+        `Re-login and switching models will not clear it. Next: ${next}, ` +
+        "or /login antigravity with another personal Google account." +
+        (validation.message ? ` Backend said: ${validation.message}` : ""));
+}
 /** Exported for unit tests. */
 export function friendlyAntigravityError(status, text) {
     const full = redactSecrets(jsonOrTextError(text));
@@ -516,6 +580,15 @@ export function friendlyAntigravityError(status, text) {
         return "Antigravity authentication failed. Next: run /login antigravity, then retry.";
     }
     if (status === 403) {
+        // Account-level eligibility block. Checked before the generic permission test
+        // because a body can carry both signals and only this one is user-fixable.
+        const validation = extractAccountValidation(text);
+        if (validation)
+            return formatAccountValidation(validation);
+        // Fallback for gateways that strip `details` but keep the message.
+        if (/verify your account|VALIDATION_REQUIRED/i.test(msg)) {
+            return formatAccountValidation({ message: msg });
+        }
         if (/permission|forbidden|access/i.test(msg)) {
             return "Antigravity access was denied for this account or project. Next: try another model, re-login, or use an account with access.";
         }
@@ -566,7 +639,7 @@ function createOutput(model) {
         role: "assistant",
         content: [],
         api: ANTIGRAVITY_API,
-        provider: PROVIDER_ID,
+        provider: model.provider || PROVIDER_ID,
         model: model.id,
         usage: {
             input: 0,
@@ -790,7 +863,7 @@ export function streamAntigravity(model, context, options) {
                 }
             }
             const sid = opts.sessionId || deriveAntigravitySessionId(context);
-            const sessionState = getOrCreateAntigravitySession(sid);
+            const sessionState = getOrCreateAntigravitySession(sid, creds.accountKey);
             const runtimeCandidates = [initialRuntimeModel];
             const fallback = getFallbackRuntimeModel(initialRuntimeModel, effort);
             if (fallback && fallback !== initialRuntimeModel) {
